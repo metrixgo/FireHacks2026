@@ -19,9 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
-
 # API Keys
 FEATHERLESS_API_KEY = os.getenv("FEATHERLESS_API_KEY")
 ORS_API_KEY = os.getenv("ORS_API_KEY")
@@ -35,10 +32,14 @@ class RouteRequest(BaseModel):
     latitude: float
     longitude: float
     prompt: str
+    weights: Dict[str, float] = {"distance": 0.4, "aqi": 0.3, "greenery": 0.15, "safety": 0.15}
 
 class RouteResponse(BaseModel):
     summary: str
     routes: List[Dict[str, Any]]
+    target_distance: float
+    actual_distances: List[float]
+    weights_used: Dict[str, float]
 
 def calculate_distance_score(actual_distance: float, target_distance: float) -> float:
     """Calculate distance score using exponential decay."""
@@ -56,17 +57,29 @@ def calculate_route_score(
     target_distance: float,
     aqi: float,
     greenery_score: float = 85.0,
-    safety_score: float = 90.0
-) -> float:
+    safety_score: float = 90.0,
+    weights: Dict[str, float] = None
+) -> Dict[str, float]:
     """Calculate overall route score using weighted formula."""
+    if weights is None:
+        weights = {"distance": 0.4, "aqi": 0.3, "greenery": 0.15, "safety": 0.15}
+    
     s_dist = calculate_distance_score(actual_distance, target_distance)
     s_aqi = calculate_aqi_score(aqi)
     s_green = greenery_score
     s_safe = safety_score
     
     # Weighted formula
-    score = (0.4 * s_dist) + (0.3 * s_aqi) + (0.15 * s_green) + (0.15 * s_safe)
-    return score
+    score = (weights["distance"] * s_dist) + (weights["aqi"] * s_aqi) + (weights["greenery"] * s_green) + (weights["safety"] * s_safe)
+    
+    return {
+        "total_score": score,
+        "distance_score": s_dist,
+        "aqi_score": s_aqi,
+        "greenery_score": s_green,
+        "safety_score": s_safe,
+        "weights": weights
+    }
 
 def extract_target_distance(prompt: str) -> float:
     """Use Featherless AI to extract target distance from prompt."""
@@ -338,19 +351,31 @@ async def plan_route(request: RouteRequest) -> RouteResponse:
         if not routes:
             raise HTTPException(status_code=500, detail="Failed to generate routes")
         
-        # Step 4: Score and rank routes
+        # Step 4: Score and rank routes with detailed breakdown
         scored_routes = []
+        actual_distances = []
+        
         for route in routes:
-            score = calculate_route_score(
+            actual_distances.append(route["distance_meters"])
+            score_details = calculate_route_score(
                 route["distance_meters"],
                 target_distance,
-                aqi
+                aqi,
+                weights=request.weights
             )
+            
             scored_routes.append({
                 "geojson": route["geojson"],
                 "distance": route["distance"],
+                "distance_meters": route["distance_meters"],
                 "aqi": round(aqi, 1),
-                "score": score
+                "score": score_details["total_score"],
+                "score_breakdown": {
+                    "distance_score": score_details["distance_score"],
+                    "aqi_score": score_details["aqi_score"],
+                    "greenery_score": score_details["greenery_score"],
+                    "safety_score": score_details["safety_score"]
+                }
             })
         
         # Sort by score (descending)
@@ -362,13 +387,24 @@ async def plan_route(request: RouteRequest) -> RouteResponse:
         
         return RouteResponse(
             summary=summary,
-            routes=scored_routes
+            routes=scored_routes,
+            target_distance=target_distance,
+            actual_distances=actual_distances,
+            weights_used=request.weights
         )
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error in plan_route: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+# Health check endpoint
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy", "message": "API is working"}
+
+# Serve static files (must be after API routes)
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
