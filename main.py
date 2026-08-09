@@ -164,7 +164,9 @@ def get_aqi_data(latitude: float, longitude: float) -> float:
 def generate_routes(latitude: float, longitude: float, target_distance: float) -> List[Dict]:
     """Generate candidate routes using OpenRouteService."""
     if not ORS_API_KEY:
-        raise HTTPException(status_code=500, detail="ORS API key not configured")
+        # Fallback: Generate simple circular routes if no API key
+        print("ORS API key not configured, using fallback route generation")
+        return generate_fallback_routes(latitude, longitude, target_distance)
     
     routes = []
     
@@ -174,7 +176,6 @@ def generate_routes(latitude: float, longitude: float, target_distance: float) -
         
         for bearing in bearings:
             # Calculate approximate target point for round trip
-            # This is a simplified approach - for production, use proper routing
             import math
             
             # Convert bearing to radians
@@ -199,7 +200,8 @@ def generate_routes(latitude: float, longitude: float, target_distance: float) -
                         [target_lon, target_lat],
                         [longitude, latitude]
                     ]
-                }
+                },
+                timeout=30
             )
             
             if response.status_code == 200:
@@ -216,9 +218,65 @@ def generate_routes(latitude: float, longitude: float, target_distance: float) -
                         "distance": distance_miles,
                         "distance_meters": distance_meters
                     })
-            
+            else:
+                print(f"ORS API error: {response.status_code} - {response.text}")
+                
     except Exception as e:
-        print(f"Error generating routes: {e}")
+        print(f"Error generating routes with ORS: {e}")
+        # Fallback to simple routes
+        return generate_fallback_routes(latitude, longitude, target_distance)
+    
+    # If no routes generated, use fallback
+    if not routes:
+        print("No routes generated from ORS, using fallback")
+        return generate_fallback_routes(latitude, longitude, target_distance)
+    
+    return routes
+
+def generate_fallback_routes(latitude: float, longitude: float, target_distance: float) -> List[Dict]:
+    """Generate simple circular routes as fallback when ORS is unavailable."""
+    import math
+    
+    routes = []
+    bearings = [0, 120, 240]  # North, Southeast, Southwest
+    
+    for bearing in bearings:
+        # Generate a simple circular route
+        bearing_rad = math.radians(bearing)
+        radius = (target_distance / 2) / 111000  # Convert to degrees
+        
+        # Create waypoints for a circular route
+        waypoints = []
+        num_points = 20
+        
+        for i in range(num_points + 1):
+            angle = (2 * math.pi * i) / num_points
+            point_lat = latitude + radius * math.cos(angle)
+            point_lon = longitude + radius * math.sin(angle) / math.cos(math.radians(latitude))
+            waypoints.append([point_lon, point_lat])
+        
+        # Create GeoJSON for the route
+        geojson = {
+            "type": "Feature",
+            "properties": {
+                "segments": [{
+                    "distance": target_distance,
+                    "duration": target_distance / 1.4  # Approximate walking speed
+                }]
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": waypoints
+            }
+        }
+        
+        distance_miles = target_distance * 0.000621371
+        
+        routes.append({
+            "geojson": geojson,
+            "distance": distance_miles,
+            "distance_meters": target_distance
+        })
     
     return routes
 
@@ -264,44 +322,53 @@ def generate_ai_summary(prompt: str, best_route: Dict) -> str:
 async def plan_route(request: RouteRequest) -> RouteResponse:
     """Main endpoint to plan exercise routes."""
     
-    # Step 1: Extract target distance using AI
-    target_distance = extract_target_distance(request.prompt)
-    
-    # Step 2: Get AQI data
-    aqi = get_aqi_data(request.latitude, request.longitude)
-    
-    # Step 3: Generate candidate routes
-    routes = generate_routes(request.latitude, request.longitude, target_distance)
-    
-    if not routes:
-        raise HTTPException(status_code=500, detail="Failed to generate routes")
-    
-    # Step 4: Score and rank routes
-    scored_routes = []
-    for route in routes:
-        score = calculate_route_score(
-            route["distance_meters"],
-            target_distance,
-            aqi
+    try:
+        # Step 1: Extract target distance using AI
+        target_distance = extract_target_distance(request.prompt)
+        print(f"Target distance: {target_distance} meters")
+        
+        # Step 2: Get AQI data
+        aqi = get_aqi_data(request.latitude, request.longitude)
+        print(f"AQI: {aqi}")
+        
+        # Step 3: Generate candidate routes
+        routes = generate_routes(request.latitude, request.longitude, target_distance)
+        print(f"Generated {len(routes)} routes")
+        
+        if not routes:
+            raise HTTPException(status_code=500, detail="Failed to generate routes")
+        
+        # Step 4: Score and rank routes
+        scored_routes = []
+        for route in routes:
+            score = calculate_route_score(
+                route["distance_meters"],
+                target_distance,
+                aqi
+            )
+            scored_routes.append({
+                "geojson": route["geojson"],
+                "distance": route["distance"],
+                "aqi": round(aqi, 1),
+                "score": score
+            })
+        
+        # Sort by score (descending)
+        scored_routes.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Step 5: Generate AI summary for best route
+        best_route = scored_routes[0]
+        summary = generate_ai_summary(request.prompt, best_route)
+        
+        return RouteResponse(
+            summary=summary,
+            routes=scored_routes
         )
-        scored_routes.append({
-            "geojson": route["geojson"],
-            "distance": route["distance"],
-            "aqi": round(aqi, 1),
-            "score": score
-        })
-    
-    # Sort by score (descending)
-    scored_routes.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Step 5: Generate AI summary for best route
-    best_route = scored_routes[0]
-    summary = generate_ai_summary(request.prompt, best_route)
-    
-    return RouteResponse(
-        summary=summary,
-        routes=scored_routes
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in plan_route: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -305,14 +305,45 @@
         // Auto-detect location
         autoDetectBtn.addEventListener('click', () => {
             if (navigator.geolocation) {
+                autoDetectBtn.disabled = true;
+                autoDetectBtn.textContent = '🔄 Locating...';
+                
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
                         latitudeInput.value = position.coords.latitude.toFixed(6);
                         longitudeInput.value = position.coords.longitude.toFixed(6);
                         map.setView([position.coords.latitude, position.coords.longitude], 14);
+                        
+                        // Add marker for user location
+                        L.marker([position.coords.latitude, position.coords.longitude])
+                            .addTo(map)
+                            .bindPopup('Your Location')
+                            .openPopup();
+                        
+                        autoDetectBtn.disabled = false;
+                        autoDetectBtn.textContent = '📍 Auto';
                     },
                     (error) => {
-                        showError('Unable to detect location. Please enter manually.');
+                        let errorMsg = 'Unable to detect location.';
+                        switch(error.code) {
+                            case error.PERMISSION_DENIED:
+                                errorMsg = 'Location permission denied. Please enable location access.';
+                                break;
+                            case error.POSITION_UNAVAILABLE:
+                                errorMsg = 'Location information unavailable.';
+                                break;
+                            case error.TIMEOUT:
+                                errorMsg = 'Location request timed out.';
+                                break;
+                        }
+                        showError(errorMsg + ' Please enter coordinates manually.');
+                        autoDetectBtn.disabled = false;
+                        autoDetectBtn.textContent = '📍 Auto';
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 0
                     }
                 );
             } else {
@@ -320,14 +351,52 @@
             }
         });
 
+        // Convert DMS to decimal degrees
+        function parseDMSToDD(dms) {
+            // Handle decimal degrees directly
+            if (!isNaN(parseFloat(dms)) && isFinite(dms)) {
+                return parseFloat(dms);
+            }
+            
+            // Parse DMS format like: 37°41'09.0"N or 121°53'39.7"W
+            const dmsRegex = /(\d+)[°](\d+)[']([\d.]+)["]?([NSEW])/i;
+            const match = dms.match(dmsRegex);
+            
+            if (match) {
+                let degrees = parseFloat(match[1]);
+                let minutes = parseFloat(match[2]);
+                let seconds = parseFloat(match[3]);
+                let direction = match[4].toUpperCase();
+                
+                let dd = degrees + minutes/60 + seconds/3600;
+                
+                if (direction === 'S' || direction === 'W') {
+                    dd = dd * -1;
+                }
+                
+                return dd;
+            }
+            
+            return NaN;
+        }
+
         // Find route
         findRouteBtn.addEventListener('click', async () => {
-            const lat = parseFloat(latitudeInput.value);
-            const lon = parseFloat(longitudeInput.value);
+            const latInput = latitudeInput.value.trim();
+            const lonInput = longitudeInput.value.trim();
             const prompt = promptInput.value.trim();
 
+            // Parse coordinates (handle both decimal and DMS formats)
+            const lat = parseDMSToDD(latInput);
+            const lon = parseDMSToDD(lonInput);
+
             if (isNaN(lat) || isNaN(lon)) {
-                showError('Please enter valid coordinates.');
+                showError('Please enter valid coordinates (decimal degrees or DMS format). Example: 37.6858 or 37°41\'09.0"N');
+                return;
+            }
+
+            if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                showError('Coordinates out of valid range. Latitude: -90 to 90, Longitude: -180 to 180');
                 return;
             }
 
@@ -354,7 +423,8 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to get route recommendations');
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || 'Failed to get route recommendations');
                 }
 
                 const data = await response.json();
@@ -414,16 +484,27 @@
 
             // Add new route
             const route = routes[index];
-            currentRouteLayer = L.geoJSON(route.geojson, {
-                style: {
-                    color: '#007bff',
-                    weight: 5,
-                    opacity: 0.8
-                }
-            }).addTo(map);
+            console.log('Route data:', route); // Debug logging
+            
+            try {
+                currentRouteLayer = L.geoJSON(route.geojson, {
+                    style: {
+                        color: '#007bff',
+                        weight: 5,
+                        opacity: 0.8
+                    }
+                }).addTo(map);
 
-            // Fit map to route
-            map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+                // Fit map to route
+                if (currentRouteLayer.getBounds()) {
+                    map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+                } else {
+                    console.error('No bounds for route');
+                }
+            } catch (error) {
+                console.error('Error displaying route:', error);
+                showError('Error displaying route on map');
+            }
         }
 
         function showError(message) {
