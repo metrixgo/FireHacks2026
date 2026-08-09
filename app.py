@@ -165,7 +165,9 @@ def get_files(room_id: str):
 
 @app.post("/api/{room_id}/ai-command")
 def generate_command(room_id: str, req: PromptRequest):
-    if not room_exists(room_id.upper()):
+    room_id = room_id.upper()
+    workshop_dir = room_dir_for(room_id)
+    if not workshop_dir.is_dir():
         raise HTTPException(status_code=404, detail="Room not found.")
 
     api_key = os.environ.get("FEATHERLESS_API_KEY")
@@ -178,11 +180,32 @@ def generate_command(room_id: str, req: PromptRequest):
     try:
         client = OpenAI(base_url="https://api.featherless.ai/v1", api_key=api_key)
 
+        # Give the AI visibility into what already exists in the room, so it
+        # can reason about real file/folder names instead of guessing blind.
+        current_files = get_file_tree(workshop_dir)
+
         system_prompt = (
-            "You are a command-line AI assistant operating strictly inside a sandboxed "
-            "working directory. Translate the user's natural language request into a "
-            "single precise POSIX shell command using only relative paths. "
-            "Never use absolute paths, '..', 'sudo', or network commands. "
+            "You are a command-line AI assistant operating inside a sandboxed, headless "
+            "Linux server with no display and no GUI. There is no browser, no file manager, "
+            "and no 'open' launcher command available — GUI-oriented commands like "
+            "'open', 'xdg-open', 'start', or launching an app/editor will always fail here. "
+            "Every command you produce runs in a brand-new subprocess each time, so state "
+            "like a working directory set by 'cd' does NOT persist between requests — if the "
+            "user's request needs to both move into a directory and then act inside it, chain "
+            "it in one command with '&&' or use paths directly instead of relying on 'cd' alone.\n\n"
+            "How to interpret common phrasing:\n"
+            "- \"open <name>\", \"show <name>\", \"view <name>\" -> if <name> is a file, use "
+            "'cat <name>'. If it's a directory, use 'ls -la <name>'.\n"
+            "- \"create a file named X\" -> 'touch X' (or 'echo \"...\" > X' if content was given).\n"
+            "- \"create a folder/directory named X\" -> 'mkdir -p X'.\n"
+            "- \"delete/remove X\" -> 'rm X' for a file, 'rm -r X' for a directory.\n"
+            "- \"find/search for X\" -> 'find . -iname \"*X*\"' or 'grep -r \"X\" .' as appropriate.\n\n"
+            "You will be shown the CURRENT FILES already in the workspace below — use those "
+            "real names and paths rather than inventing ones, and don't recreate something "
+            "that already exists unless the user explicitly asks to overwrite/recreate it.\n\n"
+            "Translate the user's natural language request into a single precise POSIX shell "
+            "command using only relative paths. Never use absolute paths, '..', 'sudo', or "
+            "network commands (curl/wget).\n\n"
             "Respond ONLY with a raw JSON object with exactly two keys:\n"
             '1. "command": the exact shell command string to execute.\n'
             '2. "explanation": a concise 1-2 sentence explanation.\n\n'
@@ -191,11 +214,16 @@ def generate_command(room_id: str, req: PromptRequest):
             "Do not include markdown formatting or extra commentary."
         )
 
+        user_message = (
+            f"CURRENT FILES in the workspace:\n{current_files}\n\n"
+            f"User request: {req.prompt}"
+        )
+
         response = client.chat.completions.create(
             model=FEATHERLESS_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": req.prompt},
+                {"role": "user", "content": user_message},
             ],
             temperature=0.1,
         )
