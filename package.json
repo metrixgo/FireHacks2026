@@ -1,0 +1,17 @@
+{
+  "name": "ai-exercise-route-planner",
+  "version": "1.0.0",
+  "description": "AI-Powered Exercise Route Planner with split-screen UI",
+  "scripts": {
+    "install:frontend": "cd frontend && npm install",
+    "install:backend": "cd backend && pip install -r requirements.txt",
+    "install:all": "npm install && npm run install:frontend && npm run install:backend",
+    "dev:backend": "cd backend && python main.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:frontend": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
