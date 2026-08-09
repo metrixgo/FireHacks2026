@@ -348,6 +348,8 @@ def calculate_risk_statistics(events: List[Dict]) -> Dict:
         - time_distribution: Monthly distribution of events
         - chart_base64: Base64-encoded risk frequency histogram (if matplotlib available)
         - chart_error: Error message if chart generation fails
+        - trend_chart_base64: Base64-encoded trend line chart
+        - comparison_chart_base64: Base64-encoded comparison chart
     """
     if not events:
         return {
@@ -356,6 +358,8 @@ def calculate_risk_statistics(events: List[Dict]) -> Dict:
             "category_breakdown": {},
             "time_distribution": {},
             "chart_base64": None,
+            "trend_chart_base64": None,
+            "comparison_chart_base64": None,
             "chart_error": "No events to analyze"
         }
     
@@ -385,37 +389,76 @@ def calculate_risk_statistics(events: List[Dict]) -> Dict:
         "std_dev": round(math.sqrt(severity_variance), 2) if severity_variance > 0 else 0
     }
     
-    # Generate chart if matplotlib is available
+    # Generate charts if matplotlib is available
     chart_base64 = None
+    trend_chart_base64 = None
+    comparison_chart_base64 = None
     chart_error = None
     
-    if HAS_MATPLOTLIB and time_distribution:
+    if HAS_MATPLOTLIB:
         try:
-            # Create figure
-            fig, ax = plt.subplots(figsize=(10, 6))
+            # Chart 1: Risk frequency histogram (bar chart)
+            if time_distribution:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                months = list(time_distribution.keys())
+                counts = list(time_distribution.values())
+                
+                ax.bar(months, counts, color='steelblue', alpha=0.7)
+                ax.set_xlabel('Time Period (YYYY-MM)')
+                ax.set_ylabel('Number of Incidents')
+                ax.set_title('Risk Frequency Distribution Over Time')
+                ax.xticks(rotation=45, ha='right')
+                ax.tight_layout()
+                
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+                buffer.seek(0)
+                chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+                plt.close(fig)
             
-            # Plot bar chart of incidents over time
-            months = list(time_distribution.keys())
-            counts = list(time_distribution.values())
+            # Chart 2: Trend line chart
+            if time_distribution and len(time_distribution) > 1:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                months = list(time_distribution.keys())
+                counts = list(time_distribution.values())
+                
+                ax.plot(months, counts, marker='o', linestyle='-', color='darkblue', linewidth=2)
+                ax.fill_between(months, counts, alpha=0.3, color='steelblue')
+                ax.set_xlabel('Time Period (YYYY-MM)')
+                ax.set_ylabel('Number of Incidents')
+                ax.set_title('Incident Trend Over Time')
+                ax.xticks(rotation=45, ha='right')
+                ax.grid(True, alpha=0.3)
+                ax.tight_layout()
+                
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+                buffer.seek(0)
+                trend_chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+                plt.close(fig)
             
-            ax.bar(months, counts, color='steelblue', alpha=0.7)
-            ax.set_xlabel('Time Period (YYYY-MM)')
-            ax.set_ylabel('Number of Incidents')
-            ax.set_title('Risk Frequency Distribution Over Time')
-            ax.xticks(rotation=45, ha='right')
-            ax.tight_layout()
-            
-            # Convert to base64
-            buffer = io.BytesIO()
-            plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-            buffer.seek(0)
-            chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-            plt.close(fig)
-            
+            # Chart 3: Category comparison (bar chart)
+            if category_breakdown:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                categories = list(category_breakdown.keys())[:10]  # Top 10 categories
+                values = [category_breakdown[cat] for cat in categories]
+                
+                ax.barh(categories, values, color='coral', alpha=0.7)
+                ax.set_xlabel('Number of Incidents')
+                ax.set_ylabel('Incident Category')
+                ax.set_title('Incident Distribution by Category')
+                ax.tight_layout()
+                
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+                buffer.seek(0)
+                comparison_chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+                plt.close(fig)
+                
         except Exception as e:
             chart_error = f"Chart generation failed: {str(e)}"
     else:
-        chart_error = "Matplotlib not available or no time data for visualization"
+        chart_error = "Matplotlib not available for visualization"
     
     return {
         "total_events": total_events,
@@ -423,10 +466,13 @@ def calculate_risk_statistics(events: List[Dict]) -> Dict:
         "category_breakdown": category_breakdown,
         "time_distribution": time_distribution,
         "chart_base64": chart_base64,
+        "trend_chart_base64": trend_chart_base64,
+        "comparison_chart_base64": comparison_chart_base64,
         "chart_error": chart_error,
         "interpretation": f"Analyzed {total_events} incidents across {len(category_breakdown)} categories. "
                           f"Severity mean: {severity_stats['mean']}, variance: {severity_stats['variance']}. "
-                          f"Data spans {len(time_distribution)} time periods."
+                          f"Data spans {len(time_distribution)} time periods. "
+                          f"Generated {sum(bool(c) for c in [chart_base64, trend_chart_base64, comparison_chart_base64])} visualization charts."
     }
 
 
