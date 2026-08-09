@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ai-code-editor-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: FEATHERLESS_API_KEY
+        sync: false
+      - key: DATA_ROOT
+        value: /opt/render/project/rooms
+    disk:
+      name: data
+      mountPath: /opt/render/project/rooms
+      sizeGB: 1

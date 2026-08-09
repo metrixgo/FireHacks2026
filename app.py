@@ -25,6 +25,21 @@ ROOMS_ROOT = Path(os.environ.get("DATA_ROOT", os.path.join(BASE_DIR, "rooms")))
 ROOMS_ROOT.mkdir(parents=True, exist_ok=True)
 ROOMS_ROOT = ROOMS_ROOT.resolve()
 
+# Ensure rooms directory exists and is writable
+try:
+    ROOMS_ROOT.mkdir(parents=True, exist_ok=True)
+    # Test write permissions
+    test_file = ROOMS_ROOT / ".write_test"
+    test_file.touch()
+    test_file.unlink()
+except Exception as e:
+    print(f"Warning: Could not write to ROOMS_ROOT {ROOMS_ROOT}: {e}")
+    # Fallback to temporary directory if needed
+    import tempfile
+    ROOMS_ROOT = Path(tempfile.gettempdir()) / "rooms"
+    ROOMS_ROOT.mkdir(parents=True, exist_ok=True)
+    ROOMS_ROOT = ROOMS_ROOT.resolve()
+
 ROOM_ID_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
 ROOM_ID_RE = re.compile(r"^[A-Z0-9]{6}$")
 
