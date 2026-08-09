@@ -8,13 +8,25 @@ House rule, and it is the whole safety argument of this project:
 
 compute_trend / compare_baseline / backtest_asof contain no model calls at all.
 """
+import base64
+import io
 import json
 import math
 import os
 from collections import Counter
+from typing import List, Dict
 
 import db
 from llm import complete
+
+# Try to import matplotlib for visualization, fallback gracefully
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 MAX_ROWS = 400
 
@@ -118,7 +130,12 @@ async def search_reports(query: str = "", airport: str = "", months: int = 24,
     sql += "WHERE " + " AND ".join(where) + " ORDER BY r.ym DESC LIMIT ?"
     params.append(min(int(limit), 25))
     rows = [dict(r) for r in con.execute(sql, params)]
-    return {"n": len(rows), "reports": rows}
+    
+    return {
+        "n": len(rows), 
+        "reports": rows,
+        "interpretation": f"Found {len(rows)} reports matching the search criteria. These are the actual safety reports filed by crews, providing real-world context for the pattern being investigated."
+    }
 
 
 async def cluster_incidents(airport: str, months: int = 24) -> dict:
@@ -131,16 +148,33 @@ async def cluster_incidents(airport: str, months: int = 24) -> dict:
         f"WHERE r.airport=? AND r.ym IN ({','.join('?' * len(window))}) "
         "GROUP BY r.cluster_id ORDER BY n DESC",
         [airport.upper(), *window]).fetchall()
-    return {"airport": airport.upper(), "window": f"{window[0]}..{window[-1]}",
-            "clusters": [dict(r) for r in rows]}
+    total = sum(r["n"] for r in rows)
+    return {
+        "airport": airport.upper(), 
+        "window": f"{window[0]}..{window[-1]}",
+        "total_reports": total,
+        "num_clusters": len(rows),
+        "clusters": [dict(r) for r in rows],
+        "interpretation": f"Found {len(rows)} distinct failure mode clusters at {airport.upper()} totaling {total} reports over this period. Each cluster represents a different type of safety issue."
+    }
 
 
 async def compute_trend(cluster_id: str, airport: str, months: int = 24,
                         recent_months: int = 6) -> dict:
     """Is this failure mode getting more common here. Pure Python."""
     con = db.connect()
-    return _trend_core(con, cluster_id, airport.upper(), _latest_ym(con),
+    result = _trend_core(con, cluster_id, airport.upper(), _latest_ym(con),
                        max(6, int(months)), max(2, int(recent_months)))
+    
+    # Add interpretive context
+    result["interpretation"] = {
+        "rate_ratio_meaning": f"A rate ratio of {result['rate_ratio']}× means this pattern is {result['rate_ratio']} times more common in recent months compared to the baseline period.",
+        "p_value_meaning": f"A p-value of {result['p_value']} {'indicates strong statistical evidence this is not random variation' if result['p_value'] < 0.01 else 'suggests this could be random variation rather than a real pattern'}.",
+        "slope_meaning": f"The trend slope of {result['slope_reports_per_month']} reports/month shows {'an increasing' if result['slope_reports_per_month'] > 0 else 'a decreasing or flat'} pattern over time.",
+        "significance": "statistically significant rising pattern" if result["significant_at_0.01"] else "not statistically significant"
+    }
+    
+    return result
 
 
 async def compare_baseline(cluster_id: str, airport: str, months: int = 24,
@@ -154,12 +188,25 @@ async def compare_baseline(cluster_id: str, airport: str, months: int = 24,
     ratios = [p["rate_ratio"] for p in peers if p["rate_ratio"] is not None]
     target = _trend_core(con, cluster_id, airport.upper(), end, months, recent_months)
     national = round(sum(ratios) / len(ratios), 2) if ratios else None
+    
+    # Add interpretation
+    is_local = target["rate_ratio"] and national and target["rate_ratio"] > national * 1.5
+    interpretation = {
+        "local_vs_national": "LOCAL RISK" if is_local else "NATIONAL PATTERN OR REPORTING ARTIFACT",
+        "explanation": f"The target airport's rate ratio of {target['rate_ratio']}× is compared against a peer median of {national}×. " +
+                      (f"Since the target is significantly higher than peers, this appears to be a local airport-specific risk." if is_local else 
+                       f"Since peers show similar patterns, this is likely a national trend or reporting artifact, not specific to this airport."),
+        "target_meaning": f"{airport.upper()} shows a {target['rate_ratio']}× increase in this pattern",
+        "peer_meaning": f"Other airports show a median {national}× increase, suggesting {'this is a nationwide issue' if national > 1.2 else 'no widespread increase'}"
+    }
+    
     return {
         "target": {"airport": target["airport"], "rate_ratio": target["rate_ratio"],
                    "p_value": target["p_value"]},
         "peer_median_rate_ratio": national,
         "peers": sorted([{"airport": p["airport"], "rate_ratio": p["rate_ratio"]} for p in peers],
                         key=lambda x: (x["rate_ratio"] is None, -(x["rate_ratio"] or 0))),
+        "interpretation": interpretation,
         "interpretation_hint": "If the target ratio is high and peers sit near 1.0, the pattern is "
                                "local. If every field rose together, it is a national or reporting "
                                "artifact, not an airport-specific risk.",
@@ -235,9 +282,303 @@ async def backtest_asof(cluster_id: str, airport: str, cutoff_ym: str,
     return res
 
 
+# ---------------------------------------------------------------- risk evaluation pipeline functions
+
+def get_database_incidents(location: str) -> List[Dict]:
+    """Query the database for incidents, safety reports, and news links matching a location.
+    
+    Args:
+        location: Location name (e.g., 'San Francisco International Airport' or ICAO code like 'KSFO')
+    
+    Returns:
+        List of dictionaries containing incident data
+    """
+    con = db.connect()
+    
+    # Try to match by ICAO code first, then by airport name
+    location_upper = location.strip().upper()
+    
+    # First try exact ICAO match
+    rows = con.execute(
+        "SELECT r.report_id, r.ym, r.airport, r.aircraft, r.phase, r.narrative, r.cluster_id, "
+        "c.label as cluster_label, a.name as airport_name "
+        "FROM reports r "
+        "LEFT JOIN clusters c ON c.cluster_id = r.cluster_id "
+        "LEFT JOIN airports a ON a.icao = r.airport "
+        "WHERE r.airport = ? "
+        "ORDER BY r.ym DESC "
+        "LIMIT 100",
+        [location_upper]
+    ).fetchall()
+    
+    # If no exact ICAO match, try airport name search
+    if not rows:
+        rows = con.execute(
+            "SELECT r.report_id, r.ym, r.airport, r.aircraft, r.phase, r.narrative, r.cluster_id, "
+            "c.label as cluster_label, a.name as airport_name "
+            "FROM reports r "
+            "LEFT JOIN clusters c ON c.cluster_id = r.cluster_id "
+            "LEFT JOIN airports a ON a.icao = r.airport "
+            "WHERE a.name LIKE ? OR r.airport LIKE ? "
+            "ORDER BY r.ym DESC "
+            "LIMIT 100",
+            [f"%{location}%", f"%{location_upper}%"]
+        ).fetchall()
+    
+    incidents = [dict(row) for row in rows]
+    
+    # Add source links (placeholder - in production, these would come from a news API)
+    for incident in incidents:
+        incident["source_url"] = f"https://example.com/incident/{incident['report_id']}"
+    
+    return incidents
+
+
+def calculate_risk_statistics(events: List[Dict]) -> Dict:
+    """Compute statistical summaries and generate visualization charts.
+    
+    Args:
+        events: List of incident dictionaries from database
+    
+    Returns:
+        Dictionary containing:
+        - total_events: Total number of events
+        - severity_stats: Mean and variance of severity metrics
+        - category_breakdown: Count by incident category/cluster
+        - time_distribution: Monthly distribution of events
+        - chart_base64: Base64-encoded risk frequency histogram (if matplotlib available)
+        - chart_error: Error message if chart generation fails
+    """
+    if not events:
+        return {
+            "total_events": 0,
+            "severity_stats": {"mean": 0, "variance": 0},
+            "category_breakdown": {},
+            "time_distribution": {},
+            "chart_base64": None,
+            "chart_error": "No events to analyze"
+        }
+    
+    # Basic statistics
+    total_events = len(events)
+    
+    # Category breakdown (using cluster_id as proxy for severity/category)
+    category_counts = Counter(event.get("cluster_id", "unknown") for event in events)
+    category_breakdown = dict(category_counts)
+    
+    # Time distribution (by year-month)
+    time_counts = Counter(event.get("ym", "unknown") for event in events)
+    time_distribution = dict(sorted(time_counts.items()))
+    
+    # Calculate severity proxy (using cluster frequency as severity indicator)
+    cluster_freq = list(category_counts.values())
+    if cluster_freq:
+        severity_mean = sum(cluster_freq) / len(cluster_freq)
+        severity_variance = sum((x - severity_mean) ** 2 for x in cluster_freq) / len(cluster_freq)
+    else:
+        severity_mean = 0
+        severity_variance = 0
+    
+    severity_stats = {
+        "mean": round(severity_mean, 2),
+        "variance": round(severity_variance, 2),
+        "std_dev": round(math.sqrt(severity_variance), 2) if severity_variance > 0 else 0
+    }
+    
+    # Generate chart if matplotlib is available
+    chart_base64 = None
+    chart_error = None
+    
+    if HAS_MATPLOTLIB and time_distribution:
+        try:
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot bar chart of incidents over time
+            months = list(time_distribution.keys())
+            counts = list(time_distribution.values())
+            
+            ax.bar(months, counts, color='steelblue', alpha=0.7)
+            ax.set_xlabel('Time Period (YYYY-MM)')
+            ax.set_ylabel('Number of Incidents')
+            ax.set_title('Risk Frequency Distribution Over Time')
+            ax.xticks(rotation=45, ha='right')
+            ax.tight_layout()
+            
+            # Convert to base64
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+            buffer.seek(0)
+            chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+            plt.close(fig)
+            
+        except Exception as e:
+            chart_error = f"Chart generation failed: {str(e)}"
+    else:
+        chart_error = "Matplotlib not available or no time data for visualization"
+    
+    return {
+        "total_events": total_events,
+        "severity_stats": severity_stats,
+        "category_breakdown": category_breakdown,
+        "time_distribution": time_distribution,
+        "chart_base64": chart_base64,
+        "chart_error": chart_error,
+        "interpretation": f"Analyzed {total_events} incidents across {len(category_breakdown)} categories. "
+                          f"Severity mean: {severity_stats['mean']}, variance: {severity_stats['variance']}. "
+                          f"Data spans {len(time_distribution)} time periods."
+    }
+
+
+def build_featherless_prompt(location: str, stats: Dict, events: List[Dict]) -> str:
+    """Construct system/user prompt forcing structured 4-block markdown response.
+    
+    Args:
+        location: Location being analyzed
+        stats: Statistical summary from calculate_risk_statistics
+        events: Raw incident data from database
+    
+    Returns:
+        Complete prompt string for Featherless AI with system and user components
+    """
+    # Prepare event summaries for the prompt (limit to avoid token limits)
+    event_summaries = []
+    for i, event in enumerate(events[:10]):  # Limit to 10 events for context
+        summary = f"Event {i+1}: {event.get('ym', 'Unknown date')} - {event.get('cluster_label', event.get('cluster_id', 'Unknown category'))}"
+        if event.get('narrative'):
+            narrative_preview = event['narrative'][:200] + "..." if len(event['narrative']) > 200 else event['narrative']
+            summary += f". Description: {narrative_preview}"
+        event_summaries.append(summary)
+    
+    events_context = "\n".join(event_summaries) if event_summaries else "No specific event details available."
+    
+    # System prompt - enforces strict structure
+    system_prompt = """You are a safety risk analysis expert. Your task is to evaluate aviation safety incidents and provide a structured, 4-block markdown response.
+
+You MUST respond with exactly 4 labeled blocks in this format:
+
+## BLOCK 1: RISK ASSESSMENT SUMMARY
+[Brief 2-3 sentence summary of the overall risk level at this location]
+
+## BLOCK 2: STATISTICAL ANALYSIS  
+[Interpretation of the provided statistics: total events, severity metrics, category breakdown, time patterns]
+
+## BLOCK 3: KEY INCIDENTS AND PATTERNS
+[Analysis of the most significant incidents and recurring patterns based on the event data]
+
+## BLOCK 4: RECOMMENDATIONS AND SOURCES
+[Specific safety recommendations followed by clickable source links in the format: [Source Title](URL)]
+
+CRITICAL REQUIREMENTS:
+- Use exactly the block headers shown above
+- Provide step-by-step explanations in each block
+- Include clickable [Title](URL) links in Block 4
+- Base all analysis on the provided statistics and event data
+- Do not invent statistics or counts beyond what is provided
+- Keep each block concise but informative"""
+
+    # User prompt with data
+    user_prompt = f"""LOCATION: {location}
+
+STATISTICAL DATA:
+- Total Events: {stats.get('total_events', 0)}
+- Severity Mean: {stats.get('severity_stats', {}).get('mean', 0)}
+- Severity Variance: {stats.get('severity_stats', {}).get('variance', 0)}
+- Standard Deviation: {stats.get('severity_stats', {}).get('std_dev', 0)}
+- Category Breakdown: {stats.get('category_breakdown', {})}
+- Time Distribution: {stats.get('time_distribution', {})}
+
+INTERPRETATION: {stats.get('interpretation', 'No interpretation available.')}
+
+INCIDENT DATA ({len(events)} total events, showing first 10):
+{events_context}
+
+Source URLs format: [Incident Report ID](https://example.com/incident/{{report_id}})
+
+Please analyze this data and provide your structured 4-block response."""
+
+    return f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_prompt}"
+
+
+async def evaluate_risk(location: str) -> Dict:
+    """Main orchestrator function for risk evaluation pipeline.
+    
+    Args:
+        location: Location name or ICAO code to evaluate
+    
+    Returns:
+        Dictionary containing:
+        - location: Evaluated location
+        - incidents: Raw incident data from database
+        - statistics: Computed risk statistics
+        - ai_analysis: Featherless AI structured response
+        - chart_data: Base64 chart if available
+        - pipeline_status: Status of each pipeline stage
+    """
+    pipeline_status = {
+        "database_query": "pending",
+        "statistics_calculation": "pending", 
+        "ai_analysis": "pending",
+        "overall": "in_progress"
+    }
+    
+    try:
+        # Stage 1: Query database for incidents
+        pipeline_status["database_query"] = "in_progress"
+        incidents = get_database_incidents(location)
+        pipeline_status["database_query"] = f"completed ({len(incidents)} events found)"
+        
+        # Stage 2: Calculate risk statistics
+        pipeline_status["statistics_calculation"] = "in_progress"
+        statistics = calculate_risk_statistics(incidents)
+        pipeline_status["statistics_calculation"] = "completed"
+        
+        # Stage 3: Build Featherless prompt and get AI analysis
+        pipeline_status["ai_analysis"] = "in_progress"
+        featherless_prompt = build_featherless_prompt(location, statistics, incidents)
+        
+        try:
+            # Use existing llm.complete function
+            ai_response = await complete(
+                model=os.environ.get("AGENT_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+                system="You are a safety risk analysis expert.",
+                user=featherless_prompt,
+                max_tokens=1000,
+                temperature=0.3
+            )
+            pipeline_status["ai_analysis"] = "completed"
+        except Exception as ai_error:
+            ai_response = f"AI analysis failed: {str(ai_error)}. Using statistical analysis only."
+            pipeline_status["ai_analysis"] = f"failed: {str(ai_error)}"
+        
+        pipeline_status["overall"] = "completed"
+        
+        return {
+            "location": location,
+            "incidents": incidents,
+            "statistics": statistics,
+            "ai_analysis": ai_response,
+            "chart_data": statistics.get("chart_base64"),
+            "pipeline_status": pipeline_status,
+            "timestamp": _latest_ym(db.connect())
+        }
+        
+    except Exception as e:
+        pipeline_status["overall"] = f"failed: {str(e)}"
+        return {
+            "location": location,
+            "error": str(e),
+            "pipeline_status": pipeline_status,
+            "incidents": [],
+            "statistics": None,
+            "ai_analysis": None
+        }
+
+
 REGISTRY = {f.__name__: f for f in [
     search_reports, cluster_incidents, compute_trend, compare_baseline,
     get_airport_context, extract_causal_chain, verify_finding, backtest_asof,
+    evaluate_risk,
 ]}
 
 
@@ -284,5 +625,11 @@ TOOL_SCHEMAS = [
              "cutoff_ym": S("YYYY-MM, the month to pretend is 'now'"),
              "months": I("default 18"), "recent_months": I("default 6")},
             ["cluster_id", "airport", "cutoff_ym"]),
+    _schema("evaluate_risk", "Complete risk evaluation pipeline for a location. Queries database, "
+            "computes statistical risk metrics, generates charts, and provides AI analysis. "
+            "Returns structured 4-block markdown response with risk assessment, statistical analysis, "
+            "key incidents, and recommendations with clickable sources.",
+            {"location": S("Airport name (e.g., 'San Francisco International Airport') or ICAO code (e.g., 'KSFO')")}, 
+            ["location"]),
 ]
 

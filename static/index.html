@@ -68,6 +68,8 @@ button.go:disabled{opacity:.45;cursor:not-allowed}
 .strip.data{background:var(--paper-data);border-left-color:#31576E}
 .strip.verify{background:var(--paper-verify);border-left-color:#8A6A1E}
 .strip.alert{background:var(--paper-alert);border-left-color:var(--alert)}
+.explanation{margin-top:6px;padding:6px 8px;background:#2A2E32;border-left:2px solid #6B7280;font-size:10px;line-height:1.35;color:#D1D5DB;border-radius:1px}
+.explanation strong{color:#9CA3AF;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;font-size:9px}
 .slot{font-family:var(--display);font-weight:800;font-size:15px;color:var(--ink-dim)}
 .fn{font-weight:600;font-size:13px;letter-spacing:.01em}
 .args{font-size:11.5px;color:var(--ink-dim);margin-top:2px;word-break:break-word}
@@ -126,12 +128,16 @@ footer{padding:14px 24px;border-top:1px solid var(--rail);font-size:10.5px;
       <span><i class="swatch" style="background:var(--paper-data)"></i>computed in python</span>
       <span><i class="swatch" style="background:var(--paper)"></i>model read</span>
       <span><i class="swatch" style="background:var(--paper-verify)"></i>independent check</span>
+      <span><i class="swatch" style="background:#2A2E32;border:1px solid #6B7280"></i>ai explanation</span>
     </div>
   </div>
   <div id="bay">
-    <p class="empty">The analyst works by filing a strip for every step it takes. Each strip shows
-    the tool it called, what it asked for, and what came back. Blue strips are arithmetic done in
-    Python against the report database — no language model produces a number in this system.</p>
+    <p class="empty">The analyst works by filing a strip for every step it takes. Each strip shows:<br>
+    • <b>Blue strips</b>: Pure Python statistics — no AI involved in the numbers<br>
+    • <b>White strips</b>: AI reading text and extracting information<br>
+    • <b>Yellow strips</b>: Independent AI verification of conclusions<br>
+    • <b>Dark gray blocks</b>: AI explanation of what each result means<br><br>
+    Every statistic is computed by Python. Featherless AI explains what the statistics mean in plain language.</p>
   </div>
   <div id="out"></div>
 </section>
@@ -207,20 +213,48 @@ function summarise(name, r) {
   if (r.error) return `<b style="color:#8C2E12">${esc(r.error)}</b>`;
   if (name === 'compute_trend' || name === 'backtest_asof') {
     const sig = r['significant_at_0.01'];
-    return `<b>${r.recent_reports}</b> reports in the last ${r.recent_months} months ·
+    let html = `<b>${r.recent_reports}</b> reports in the last ${r.recent_months} months ·
       recent rate <b>${r.recent_rate_per_month}/mo</b> vs baseline <b>${r.baseline_rate_per_month}/mo</b> ·
       ratio <b>${r.rate_ratio ?? '—'}×</b> · p=<b>${r.p_value}</b>
       ${sig ? '<b style="color:#8C2E12"> — significant</b>' : ' — not significant'}
       ${r.would_have_flagged !== undefined ? `<br>as of ${esc(r.cutoff_ym)}, using data through ${esc(r.data_used_through)}: <b>${r.would_have_flagged ? 'WOULD have flagged' : 'would not have flagged'}</b>` : ''}
       ${r.monthly_counts ? sparkline(r.monthly_counts) : ''}`;
+    
+    // Add built-in interpretation if available
+    if (r.interpretation) {
+      html += `<div class="explanation"><strong>Key Statistics Explained:</strong><br>
+        • ${esc(r.interpretation.rate_ratio_meaning)}<br>
+        • ${esc(r.interpretation.p_value_meaning)}<br>
+        • ${esc(r.interpretation.slope_meaning)}</div>`;
+    }
+    return html;
   }
-  if (name === 'compare_baseline')
-    return `target <b>${r.target.rate_ratio ?? '—'}×</b> · peer median <b>${r.peer_median_rate_ratio ?? '—'}×</b><br>
+  if (name === 'compare_baseline') {
+    let html = `target <b>${r.target.rate_ratio ?? '—'}×</b> · peer median <b>${r.peer_median_rate_ratio ?? '—'}×</b><br>
       ${r.peers.slice(0,5).map(p => `${esc(p.airport)} ${p.rate_ratio ?? '—'}×`).join(' · ')}`;
-  if (name === 'cluster_incidents')
-    return r.clusters.slice(0,6).map(c => `<b>${esc(c.cluster_id)}</b> ${esc(c.label||'')} (${c.n})`).join('<br>');
-  if (name === 'search_reports')
-    return `<b>${r.n}</b> matched · ` + r.reports.slice(0,3).map(x => esc(x.report_id)).join(', ');
+    
+    if (r.interpretation) {
+      html += `<div class="explanation"><strong>${esc(r.interpretation.local_vs_national)}</strong><br>
+        ${esc(r.interpretation.explanation)}<br>
+        • ${esc(r.interpretation.target_meaning)}<br>
+        • ${esc(r.interpretation.peer_meaning)}</div>`;
+    }
+    return html;
+  }
+  if (name === 'cluster_incidents') {
+    let html = r.clusters.slice(0,6).map(c => `<b>${esc(c.cluster_id)}</b> ${esc(c.label||'')} (${c.n})`).join('<br>');
+    if (r.interpretation) {
+      html += `<div class="explanation">${esc(r.interpretation)}</div>`;
+    }
+    return html;
+  }
+  if (name === 'search_reports') {
+    let html = `<b>${r.n}</b> matched · ` + r.reports.slice(0,3).map(x => esc(x.report_id)).join(', ');
+    if (r.interpretation) {
+      html += `<div class="explanation">${esc(r.interpretation)}</div>`;
+    }
+    return html;
+  }
   if (name === 'verify_finding')
     return `verdict <b>${esc(r.verdict||'?')}</b> — ${esc(r.reason||'')}`;
   if (name === 'extract_causal_chain' && r.chain)
@@ -256,6 +290,15 @@ function ask() {
     const el = open[d.name + d.step]; if (!el) return;
     el.querySelector('.res').innerHTML = summarise(d.name, d.result);
     if (d.result && d.result['significant_at_0.01']) el.classList.add('alert');
+  });
+
+  source.addEventListener('explanation', e => {
+    const d = JSON.parse(e.data);
+    const el = open[d.name + d.step]; if (!el) return;
+    const expDiv = document.createElement('div');
+    expDiv.className = 'explanation';
+    expDiv.innerHTML = `<strong>What this means:</strong> ${esc(d.text)}`;
+    el.querySelector('.res').appendChild(expDiv);
   });
 
   source.addEventListener('answer', e => {

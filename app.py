@@ -92,3 +92,9 @@ async def ask(q: str):
 async def backtest(cluster_id: str, airport: str, cutoff_ym: str):
     return await tools.backtest_asof(cluster_id, airport, cutoff_ym)
 
+
+@app.get("/api/evaluate-risk")
+async def evaluate_risk(location: str):
+    """Complete risk evaluation pipeline endpoint."""
+    return await tools.evaluate_risk(location)
+
