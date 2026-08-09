@@ -341,7 +341,7 @@
             findRouteBtn.disabled = true;
 
             try {
-                const response = await fetch('http://localhost:8000/api/plan-route', {
+                const response = await fetch('/api/plan-route', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
