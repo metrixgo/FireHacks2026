@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Exercise Route Planner</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+        }
+
+        .left-panel {
+            width: 35%;
+            background: #f8f9fa;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .right-panel {
+            width: 65%;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            color: #212529;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            font-size: 1.2rem;
+            color: #495057;
+            margin-bottom: 10px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        label {
+            font-weight: 600;
+            color: #495057;
+            font-size: 0.9rem;
+        }
+
+        input, textarea {
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            font-family: inherit;
+        }
+
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .location-inputs {
+            display: flex;
+            gap: 10px;
+        }
+
+        .location-inputs input {
+            flex: 1;
+        }
+
+        button {
+            padding: 12px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .auto-detect-btn {
+            background: #6c757d;
+            padding: 10px 15px;
+            font-size: 0.85rem;
+        }
+
+        .auto-detect-btn:hover {
+            background: #545b62;
+        }
+
+        .ai-summary {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            min-height: 100px;
+        }
+
+        .ai-summary h3 {
+            font-size: 1rem;
+            color: #007bff;
+            margin-bottom: 10px;
+        }
+
+        .ai-summary p {
+            line-height: 1.6;
+            color: #495057;
+        }
+
+        .routes-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .route-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .route-item:hover {
+            border-color: #007bff;
+            box-shadow: 0 2px 8px rgba(0, 123, 255, 0.15);
+        }
+
+        .route-item.selected {
+            border-color: #007bff;
+            background: #f0f7ff;
+        }
+
+        .route-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .route-score {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #28a745;
+        }
+
+        .route-details {
+            display: flex;
+            gap: 15px;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .route-detail {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #007bff;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #f5c6cb;
+            display: none;
+        }
+
+        .error.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="left-panel">
+            <h1>AI Route Planner</h1>
+            
+            <div class="form-group">
+                <label>Location</label>
+                <div class="location-inputs">
+                    <input type="text" id="latitude" placeholder="Latitude" step="any">
+                    <input type="text" id="longitude" placeholder="Longitude" step="any">
+                    <button class="auto-detect-btn" id="autoDetect">📍 Auto</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="prompt">Your Exercise Goal</label>
+                <textarea id="prompt" placeholder="e.g., I want to run for 5 miles."></textarea>
+            </div>
+
+            <button id="findRoute">Find Best Route</button>
+
+            <div class="error" id="error"></div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Finding the perfect route for you...</p>
+            </div>
+
+            <div class="ai-summary" id="aiSummary">
+                <h3>AI Recommendation</h3>
+                <p>Enter your location and exercise goal to get personalized route recommendations.</p>
+            </div>
+
+            <div class="routes-list" id="routesList"></div>
+        </div>
+
+        <div class="right-panel">
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([40.7128, -74.0060], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let currentRouteLayer = null;
+        let routes = [];
+
+        // DOM elements
+        const latitudeInput = document.getElementById('latitude');
+        const longitudeInput = document.getElementById('longitude');
+        const autoDetectBtn = document.getElementById('autoDetect');
+        const promptInput = document.getElementById('prompt');
+        const findRouteBtn = document.getElementById('findRoute');
+        const loadingDiv = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        const aiSummaryDiv = document.getElementById('aiSummary');
+        const routesListDiv = document.getElementById('routesList');
+
+        // Auto-detect location
+        autoDetectBtn.addEventListener('click', () => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        latitudeInput.value = position.coords.latitude.toFixed(6);
+                        longitudeInput.value = position.coords.longitude.toFixed(6);
+                        map.setView([position.coords.latitude, position.coords.longitude], 14);
+                    },
+                    (error) => {
+                        showError('Unable to detect location. Please enter manually.');
+                    }
+                );
+            } else {
+                showError('Geolocation is not supported by your browser.');
+            }
+        });
+
+        // Find route
+        findRouteBtn.addEventListener('click', async () => {
+            const lat = parseFloat(latitudeInput.value);
+            const lon = parseFloat(longitudeInput.value);
+            const prompt = promptInput.value.trim();
+
+            if (isNaN(lat) || isNaN(lon)) {
+                showError('Please enter valid coordinates.');
+                return;
+            }
+
+            if (!prompt) {
+                showError('Please enter your exercise goal.');
+                return;
+            }
+
+            loadingDiv.classList.add('active');
+            errorDiv.classList.remove('active');
+            findRouteBtn.disabled = true;
+
+            try {
+                const response = await fetch('http://localhost:8000/api/plan-route', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        latitude: lat,
+                        longitude: lon,
+                        prompt: prompt
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to get route recommendations');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+            } catch (error) {
+                showError('Error: ' + error.message);
+            } finally {
+                loadingDiv.classList.remove('active');
+                findRouteBtn.disabled = false;
+            }
+        });
+
+        function displayResults(data) {
+            // Update AI summary
+            aiSummaryDiv.innerHTML = `
+                <h3>AI Recommendation</h3>
+                <p>${data.summary}</p>
+            `;
+
+            // Store routes
+            routes = data.routes;
+
+            // Display routes list
+            routesListDiv.innerHTML = '';
+            routes.forEach((route, index) => {
+                const routeItem = document.createElement('div');
+                routeItem.className = 'route-item';
+                routeItem.innerHTML = `
+                    <div class="route-header">
+                        <span>Route ${index + 1}</span>
+                        <span class="route-score">${route.score.toFixed(1)}</span>
+                    </div>
+                    <div class="route-details">
+                        <span class="route-detail">📏 ${route.distance.toFixed(2)} mi</span>
+                        <span class="route-detail">🌫️ AQI: ${route.aqi}</span>
+                    </div>
+                `;
+                routeItem.addEventListener('click', () => selectRoute(index, routeItem));
+                routesListDiv.appendChild(routeItem);
+            });
+
+            // Select first route by default
+            if (routes.length > 0) {
+                selectRoute(0, routesListDiv.firstChild);
+            }
+        }
+
+        function selectRoute(index, element) {
+            // Update UI selection
+            document.querySelectorAll('.route-item').forEach(item => item.classList.remove('selected'));
+            element.classList.add('selected');
+
+            // Remove previous route layer
+            if (currentRouteLayer) {
+                map.removeLayer(currentRouteLayer);
+            }
+
+            // Add new route
+            const route = routes[index];
+            currentRouteLayer = L.geoJSON(route.geojson, {
+                style: {
+                    color: '#007bff',
+                    weight: 5,
+                    opacity: 0.8
+                }
+            }).addTo(map);
+
+            // Fit map to route
+            map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+        }
+
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.classList.add('active');
+        }
+    </script>
+</body>
+</html>
