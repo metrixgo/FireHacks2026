@@ -383,6 +383,7 @@
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button id="analyzeAI" style="flex: 1; background: #28a745;">Analyze AI Decision</button>
                 <button id="showHeatmap" style="flex: 1; background: #17a2b8;">Show Score Heatmap</button>
+                <button id="showNavigation" style="flex: 1; background: #6f42c1;">Show Navigation</button>
             </div>
             
             <div class="analysis-panel" id="aiAnalysis" style="display: none;">
@@ -406,6 +407,11 @@
                         <span>Low Score (<50)</span>
                     </div>
                 </div>
+            </div>
+            
+            <div class="analysis-panel" id="navigationPanel" style="display: none;">
+                <h3>Turn-by-Turn Navigation</h3>
+                <div class="analysis-content" id="navigationContent"></div>
             </div>
         </div>
 
@@ -449,23 +455,144 @@
         const greeneryWeight = document.getElementById('greeneryWeight');
         const safetyWeight = document.getElementById('safetyWeight');
 
-        // Update weight displays
-        function updateWeightDisplays() {
-            const total = parseInt(distanceSlider.value) + parseInt(aqiSlider.value) + 
-                          parseInt(greenerySlider.value) + parseInt(safetySlider.value);
+        // Update weight displays with auto-adjustment
+        function updateWeightDisplays(changedSlider = null) {
+            const distanceVal = parseInt(distanceSlider.value);
+            const aqiVal = parseInt(aqiSlider.value);
+            const greeneryVal = parseInt(greenerySlider.value);
+            const safetyVal = parseInt(safetySlider.value);
             
-            distanceWeight.textContent = distanceSlider.value;
-            aqiWeight.textContent = aqiSlider.value;
-            greeneryWeight.textContent = greenerySlider.value;
-            safetyWeight.textContent = safetySlider.value;
+            let total = distanceVal + aqiVal + greeneryVal + safetyVal;
+            
+            distanceWeight.textContent = distanceVal;
+            aqiWeight.textContent = aqiVal;
+            greeneryWeight.textContent = greeneryVal;
+            safetyWeight.textContent = safetyVal;
+            
+            // Auto-adjust if changed and total != 100
+            if (changedSlider && total !== 100) {
+                const diff = 100 - total;
+                const otherSliders = [distanceSlider, aqiSlider, greenerySlider, safetySlider].filter(s => s !== changedSlider);
+                const adjustment = diff / otherSliders.length;
+                
+                otherSliders.forEach(slider => {
+                    let newVal = parseInt(slider.value) + adjustment;
+                    newVal = Math.max(0, Math.min(100, Math.round(newVal)));
+                    slider.value = newVal;
+                });
+                
+                // Recalculate total
+                total = parseInt(distanceSlider.value) + parseInt(aqiSlider.value) + 
+                        parseInt(greenerySlider.value) + parseInt(safetySlider.value);
+                
+                // Update displays again
+                distanceWeight.textContent = distanceSlider.value;
+                aqiWeight.textContent = aqiSlider.value;
+                greeneryWeight.textContent = greenerySlider.value;
+                safetyWeight.textContent = safetySlider.value;
+            }
             
             return total;
         }
 
-        // Add event listeners to sliders
+        // Add event listeners to sliders with auto-adjustment
         [distanceSlider, aqiSlider, greenerySlider, safetySlider].forEach(slider => {
-            slider.addEventListener('input', updateWeightDisplays);
+            slider.addEventListener('input', (e) => {
+                updateWeightDisplays(e.target);
+                // Re-score routes if we have route data
+                if (routeData && routeData.routes.length > 0) {
+                    reScoreRoutes();
+                }
+            });
         });
+
+        // Re-score routes based on new weights
+        function reScoreRoutes() {
+            if (!routeData || !routeData.routes) return;
+            
+            const weights = {
+                distance: parseInt(distanceSlider.value) / 100,
+                aqi: parseInt(aqiSlider.value) / 100,
+                greenery: parseInt(greenerySlider.value) / 100,
+                safety: parseInt(safetySlider.value) / 100
+            };
+            
+            // Re-calculate scores for each route
+            routeData.routes.forEach(route => {
+                const breakdown = route.score_breakdown;
+                const newScore = (weights.distance * breakdown.distance_score) + 
+                                (weights.aqi * breakdown.aqi_score) + 
+                                (weights.greenery * breakdown.greenery_score) + 
+                                (weights.safety * breakdown.safety_score);
+                route.score = newScore;
+            });
+            
+            // Re-sort routes
+            routeData.routes.sort((a, b) => b.score - a.score);
+            
+            // Update the display
+            updateRoutesDisplay();
+        }
+
+        // Update routes display without regenerating
+        function updateRoutesDisplay() {
+            if (!routeData || !routeData.routes) return;
+            
+            routes = routeData.routes;
+            
+            // Update routes list
+            routesListDiv.innerHTML = '';
+            routeData.routes.forEach((route, index) => {
+                const routeItem = document.createElement('div');
+                routeItem.className = 'route-item';
+                
+                const breakdown = route.score_breakdown;
+                routeItem.innerHTML = `
+                    <div class="route-header">
+                        <span>Route ${index + 1} - ${route.description}</span>
+                        <span class="route-score">${route.score.toFixed(1)}</span>
+                    </div>
+                    <div class="route-details">
+                        <span class="route-detail">📏 ${route.distance.toFixed(2)} mi</span>
+                        <span class="route-detail">🌫️ AQI: ${route.aqi}</span>
+                        <span class="route-detail">🔄 ${route.pattern}</span>
+                    </div>
+                    <div class="score-breakdown">
+                        <div class="score-breakdown-item">
+                            <span>Distance Score:</span>
+                            <span>${breakdown.distance_score.toFixed(1)}</span>
+                        </div>
+                        <div class="score-breakdown-item">
+                            <span>AQI Score:</span>
+                            <span>${breakdown.aqi_score.toFixed(1)}</span>
+                        </div>
+                        <div class="score-breakdown-item">
+                            <span>Greenery Score:</span>
+                            <span>${breakdown.greenery_score.toFixed(1)}</span>
+                        </div>
+                        <div class="score-breakdown-item">
+                            <span>Safety Score:</span>
+                            <span>${breakdown.safety_score.toFixed(1)}</span>
+                        </div>
+                    </div>
+                `;
+                routeItem.addEventListener('click', () => selectRoute(index, routeItem));
+                routesListDiv.appendChild(routeItem);
+            });
+            
+            // Keep current selection if possible
+            const selectedRoute = document.querySelector('.route-item.selected');
+            if (selectedRoute && routes.length > 0) {
+                const index = Array.from(routesListDiv.children).indexOf(selectedRoute);
+                if (index >= 0 && index < routes.length) {
+                    selectRoute(index, routesListDiv.children[index]);
+                } else {
+                    selectRoute(0, routesListDiv.firstChild);
+                }
+            } else if (routes.length > 0) {
+                selectRoute(0, routesListDiv.firstChild);
+            }
+        }
 
         // AI Analysis button
         document.getElementById('analyzeAI').addEventListener('click', () => {
@@ -525,6 +652,77 @@
             analysisPanel.style.display = 'block';
         });
 
+        // Navigation button
+        document.getElementById('showNavigation').addEventListener('click', () => {
+            if (!routeData || !routeData.routes || routeData.routes.length === 0) {
+                showError('Please find routes first before showing navigation.');
+                return;
+            }
+
+            const navigationPanel = document.getElementById('navigationPanel');
+            const navigationContent = document.getElementById('navigationContent');
+            
+            // Get the currently selected or best route
+            const selectedRouteIndex = Array.from(routesListDiv.children).findIndex(item => item.classList.contains('selected'));
+            const routeIndex = selectedRouteIndex >= 0 ? selectedRouteIndex : 0;
+            const route = routeData.routes[routeIndex];
+            
+            if (!route.turn_by_turn || route.turn_by_turn.length === 0) {
+                navigationContent.innerHTML = '<p>No turn-by-turn directions available for this route.</p>';
+                navigationPanel.style.display = 'block';
+                return;
+            }
+            
+            let navigationHTML = `<p><strong>Route:</strong> ${route.description}</p>`;
+            navigationHTML += `<p><strong>Total Distance:</strong> ${route.distance.toFixed(2)} miles</p>`;
+            navigationHTML += '<div style="margin-top: 15px;"><strong>Directions:</strong></div>';
+            
+            route.turn_by_turn.forEach((step, index) => {
+                const distance = (step.distance * 0.000621371).toFixed(2); // Convert to miles
+                navigationHTML += `
+                    <div style="padding: 8px; border-left: 3px solid #007bff; margin: 8px 0; background: #f8f9fa;">
+                        <div style="font-weight: 600;">${index + 1}. ${step.instruction}</div>
+                        <div style="font-size: 0.85rem; color: #6c757d; margin-top: 4px;">
+                            Distance: ${distance} miles | Bearing: ${step.bearing.toFixed(0)}°
+                        </div>
+                    </div>
+                `;
+            });
+            
+            navigationContent.innerHTML = navigationHTML;
+            navigationPanel.style.display = 'block';
+            
+            // Add navigation markers to map
+            addNavigationMarkers(route);
+        });
+
+        function addNavigationMarkers(route) {
+            // Remove existing navigation markers
+            if (window.navigationMarkers) {
+                window.navigationMarkers.forEach(marker => map.removeLayer(marker));
+            }
+            window.navigationMarkers = [];
+            
+            // Add markers for each turn point
+            const coords = route.geojson.geometry.coordinates;
+            coords.forEach((coord, index) => {
+                const marker = L.marker([coord[1], coord[0]], {
+                    icon: L.divIcon({
+                        className: 'navigation-marker',
+                        html: `<div style="background: #007bff; color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; border: 2px solid white;">${index + 1}</div>`,
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12]
+                    })
+                }).addTo(map);
+                
+                if (route.turn_by_turn[index]) {
+                    marker.bindPopup(`<strong>Step ${index + 1}</strong><br>${route.turn_by_turn[index].instruction}`);
+                }
+                
+                window.navigationMarkers.push(marker);
+            });
+        }
+
         // Heatmap button
         document.getElementById('showHeatmap').addEventListener('click', () => {
             if (!routeData || !routeData.routes || routeData.routes.length === 0) {
@@ -550,6 +748,12 @@
                 heatmapBtn.textContent = 'Hide Score Heatmap';
                 heatmapBtn.style.background = '#dc3545';
                 legend.style.display = 'block';
+
+                // Remove navigation markers if present
+                if (window.navigationMarkers) {
+                    window.navigationMarkers.forEach(marker => map.removeLayer(marker));
+                    window.navigationMarkers = [];
+                }
 
                 // Add all routes with score-based colors
                 routeData.routes.forEach((route, index) => {
@@ -840,6 +1044,15 @@
             // If heatmap is active, switch back to single route mode
             if (showHeatmap) {
                 document.getElementById('showHeatmap').click();
+            }
+
+            // Hide navigation panel
+            document.getElementById('navigationPanel').style.display = 'none';
+
+            // Remove navigation markers if present
+            if (window.navigationMarkers) {
+                window.navigationMarkers.forEach(marker => map.removeLayer(marker));
+                window.navigationMarkers = [];
             }
 
             // Update UI selection

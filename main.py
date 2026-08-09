@@ -58,16 +58,25 @@ def calculate_route_score(
     aqi: float,
     greenery_score: float = 85.0,
     safety_score: float = 90.0,
-    weights: Dict[str, float] = None
+    weights: Dict[str, float] = None,
+    variations: Dict[str, float] = None
 ) -> Dict[str, float]:
     """Calculate overall route score using weighted formula."""
     if weights is None:
         weights = {"distance": 0.4, "aqi": 0.3, "greenery": 0.15, "safety": 0.15}
     
+    if variations is None:
+        variations = {"aqi_modifier": 1.0, "greenery_modifier": 1.0, "safety_modifier": 1.0}
+    
     s_dist = calculate_distance_score(actual_distance, target_distance)
-    s_aqi = calculate_aqi_score(aqi)
-    s_green = greenery_score
-    s_safe = safety_score
+    s_aqi = calculate_aqi_score(aqi) * variations["aqi_modifier"]
+    s_green = greenery_score * variations["greenery_modifier"]
+    s_safe = safety_score * variations["safety_modifier"]
+    
+    # Clamp scores to 0-100
+    s_aqi = max(0, min(100, s_aqi))
+    s_green = max(0, min(100, s_green))
+    s_safe = max(0, min(100, s_safe))
     
     # Weighted formula
     score = (weights["distance"] * s_dist) + (weights["aqi"] * s_aqi) + (weights["greenery"] * s_green) + (weights["safety"] * s_safe)
@@ -226,10 +235,32 @@ def generate_routes(latitude: float, longitude: float, target_distance: float) -
                     distance_meters = route_feature["properties"]["segments"][0]["distance"]
                     distance_miles = distance_meters * 0.000621371
                     
+                    # Extract turn-by-turn directions if available
+                    steps = []
+                    if "steps" in route_feature["properties"]["segments"][0]:
+                        steps = route_feature["properties"]["segments"][0]["steps"]
+                    else:
+                        # Generate basic steps from coordinates
+                        coords = route_feature["geometry"]["coordinates"]
+                        for i in range(len(coords) - 1):
+                            bearing = calculate_bearing(coords[i][1], coords[i][0], coords[i+1][1], coords[i+1][0])
+                            dist = calculate_distance_between_points(coords[i][1], coords[i][0], coords[i+1][1], coords[i+1][0])
+                            steps.append({
+                                "instruction": get_direction_instruction(bearing, i, len(coords), "custom"),
+                                "distance": dist,
+                                "bearing": bearing,
+                                "coordinates": coords[i+1]
+                            })
+                    
+                    route_feature["properties"]["segments"][0]["steps"] = steps
+                    route_feature["properties"]["pattern"] = "ors_route"
+                    route_feature["properties"]["description"] = "Route via OpenRouteService"
+                    
                     routes.append({
                         "geojson": route_feature,
                         "distance": distance_miles,
-                        "distance_meters": distance_meters
+                        "distance_meters": distance_meters,
+                        "pattern": "ors_route"
                     })
             else:
                 print(f"ORS API error: {response.status_code} - {response.text}")
@@ -247,35 +278,173 @@ def generate_routes(latitude: float, longitude: float, target_distance: float) -
     return routes
 
 def generate_fallback_routes(latitude: float, longitude: float, target_distance: float) -> List[Dict]:
-    """Generate simple circular routes as fallback when ORS is unavailable."""
+    """Generate realistic round-trip routes when ORS is unavailable."""
     import math
+    import random
     
     routes = []
-    bearings = [0, 120, 240]  # North, Southeast, Southwest
     
-    for bearing in bearings:
-        # Generate a simple circular route
-        bearing_rad = math.radians(bearing)
-        radius = (target_distance / 2) / 111000  # Convert to degrees
+    # Generate different route patterns
+    route_patterns = [
+        "out_and_back",    # Go out and return same path
+        "loop",            # Circular loop
+        "figure_eight",    # Figure-8 pattern
+        "lollipop",        # Out to a loop, return same path
+        "triangle"         # Triangular route
+    ]
+    
+    for pattern_idx, pattern in enumerate(route_patterns):
+        waypoints = [[longitude, latitude]]  # Start at user location
         
-        # Create waypoints for a circular route
-        waypoints = []
-        num_points = 20
+        # Calculate route based on pattern
+        if pattern == "out_and_back":
+            # Go in one direction, then return
+            bearing = random.uniform(0, 360)
+            distance = target_distance / 2
+            
+            # Calculate intermediate point
+            bearing_rad = math.radians(bearing)
+            half_dist_deg = (distance / 2) / 111000
+            
+            mid_lat = latitude + half_dist_deg * math.cos(bearing_rad)
+            mid_lon = longitude + half_dist_deg * math.sin(bearing_rad) / math.cos(math.radians(latitude))
+            
+            # End point (turnaround)
+            end_lat = latitude + (distance / 111000) * math.cos(bearing_rad)
+            end_lon = longitude + (distance / 111000) * math.sin(bearing_rad) / math.cos(math.radians(latitude))
+            
+            waypoints.append([mid_lon, mid_lat])
+            waypoints.append([end_lon, end_lat])
+            waypoints.append([mid_lon, mid_lat])
+            waypoints.append([longitude, latitude])
+            
+        elif pattern == "loop":
+            # Create a realistic loop with varying radius
+            num_points = 12
+            base_radius = (target_distance / (2 * math.pi)) / 111000
+            
+            for i in range(num_points + 1):
+                angle = (2 * math.pi * i) / num_points
+                # Add some variation to make it more realistic
+                variation = random.uniform(0.8, 1.2)
+                radius = base_radius * variation
+                
+                point_lat = latitude + radius * math.cos(angle)
+                point_lon = longitude + radius * math.sin(angle) / math.cos(math.radians(latitude))
+                waypoints.append([point_lon, point_lat])
+                
+        elif pattern == "figure_eight":
+            # Figure-8 pattern
+            num_points = 16
+            radius = (target_distance / 4) / 111000  # Smaller loops for figure-8
+            
+            for i in range(num_points + 1):
+                t = (2 * math.pi * i) / num_points
+                # Figure-8 parametric equations
+                x = radius * math.sin(t)
+                y = radius * math.sin(t) * math.cos(t)
+                
+                point_lat = latitude + y / math.cos(math.radians(latitude))
+                point_lon = longitude + x
+                waypoints.append([point_lon, point_lat])
+                
+        elif pattern == "lollipop":
+            # Out to a loop, return same way
+            stick_length = target_distance * 0.3
+            loop_length = target_distance * 0.7
+            loop_radius = (loop_length / (2 * math.pi)) / 111000
+            stick_dist_deg = (stick_length / 111000)
+            
+            bearing = random.uniform(0, 360)
+            bearing_rad = math.radians(bearing)
+            
+            # End of the stick
+            loop_center_lat = latitude + stick_dist_deg * math.cos(bearing_rad)
+            loop_center_lon = longitude + stick_dist_deg * math.sin(bearing_rad) / math.cos(math.radians(latitude))
+            
+            waypoints.append([loop_center_lon, loop_center_lat])
+            
+            # Create the loop
+            num_loop_points = 8
+            for i in range(num_loop_points + 1):
+                angle = (2 * math.pi * i) / num_loop_points
+                point_lat = loop_center_lat + loop_radius * math.cos(angle)
+                point_lon = loop_center_lon + loop_radius * math.sin(angle) / math.cos(math.radians(loop_center_lat))
+                waypoints.append([point_lon, point_lat])
+            
+            # Return via stick
+            waypoints.append([loop_center_lon, loop_center_lat])
+            waypoints.append([longitude, latitude])
+            
+        elif pattern == "triangle":
+            # Triangular route
+            side_length = target_distance / 3
+            side_deg = side_length / 111000
+            
+            # First vertex
+            bearing1 = random.uniform(0, 360)
+            bearing1_rad = math.radians(bearing1)
+            
+            v1_lat = latitude + side_deg * math.cos(bearing1_rad)
+            v1_lon = longitude + side_deg * math.sin(bearing1_rad) / math.cos(math.radians(latitude))
+            
+            # Second vertex (120 degrees from first)
+            bearing2 = bearing1 + 120
+            bearing2_rad = math.radians(bearing2)
+            
+            v2_lat = v1_lat + side_deg * math.cos(bearing2_rad)
+            v2_lon = v1_lon + side_deg * math.sin(bearing2_rad) / math.cos(math.radians(v1_lat))
+            
+            waypoints.append([v1_lon, v1_lat])
+            waypoints.append([v2_lon, v2_lat])
+            waypoints.append([longitude, latitude])
         
-        for i in range(num_points + 1):
-            angle = (2 * math.pi * i) / num_points
-            point_lat = latitude + radius * math.cos(angle)
-            point_lon = longitude + radius * math.sin(angle) / math.cos(math.radians(latitude))
-            waypoints.append([point_lon, point_lat])
+        # Calculate actual distance (approximate)
+        total_distance = 0
+        for i in range(len(waypoints) - 1):
+            lat1, lon1 = waypoints[i][1], waypoints[i][0]
+            lat2, lon2 = waypoints[i+1][1], waypoints[i+1][0]
+            
+            # Haversine formula
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+            c = 2 * math.asin(math.sqrt(a))
+            total_distance += 6371000 * c  # Earth's radius in meters
         
-        # Create GeoJSON for the route
+        # Add some realistic variation to make routes more unique
+        # Add small random perturbations to waypoints
+        for i in range(1, len(waypoints) - 1):  # Don't modify start/end points
+            perturbation = random.uniform(-0.0001, 0.0001)  # Small perturbation in degrees
+            waypoints[i][1] += perturbation  # Latitude
+            waypoints[i][0] += perturbation / math.cos(math.radians(waypoints[i][1]))  # Longitude
+        
+        # Adjust to match target distance better
+        scale_factor = target_distance / total_distance if total_distance > 0 else 1
+        
+        # Create GeoJSON with turn-by-turn information
+        # Add pattern-specific variation to make routes more realistic
+        pattern_variations = {
+            "out_and_back": {"aqi_modifier": 0.9, "greenery_modifier": 0.8, "safety_modifier": 0.9},
+            "loop": {"aqi_modifier": 1.1, "greenery_modifier": 1.2, "safety_modifier": 1.0},
+            "figure_eight": {"aqi_modifier": 1.0, "greenery_modifier": 1.1, "safety_modifier": 0.9},
+            "lollipop": {"aqi_modifier": 1.2, "greenery_modifier": 1.3, "safety_modifier": 1.1},
+            "triangle": {"aqi_modifier": 0.95, "greenery_modifier": 0.9, "safety_modifier": 1.0}
+        }
+        
+        variations = pattern_variations.get(pattern, {"aqi_modifier": 1.0, "greenery_modifier": 1.0, "safety_modifier": 1.0})
+        
         geojson = {
             "type": "Feature",
             "properties": {
                 "segments": [{
-                    "distance": target_distance,
-                    "duration": target_distance / 1.4  # Approximate walking speed
-                }]
+                    "distance": total_distance,
+                    "duration": total_distance / 1.4,  # Approximate walking speed
+                    "steps": generate_turn_by_turn(waypoints, pattern)
+                }],
+                "pattern": pattern,
+                "description": f"{pattern.replace('_', ' ').title()} route",
+                "variations": variations
             },
             "geometry": {
                 "type": "LineString",
@@ -283,15 +452,90 @@ def generate_fallback_routes(latitude: float, longitude: float, target_distance:
             }
         }
         
-        distance_miles = target_distance * 0.000621371
+        distance_miles = total_distance * 0.000621371
         
         routes.append({
             "geojson": geojson,
             "distance": distance_miles,
-            "distance_meters": target_distance
+            "distance_meters": total_distance,
+            "pattern": pattern
         })
     
     return routes
+
+def generate_turn_by_turn(waypoints: List, pattern: str) -> List[Dict]:
+    """Generate turn-by-turn directions for the route."""
+    steps = []
+    
+    for i in range(len(waypoints) - 1):
+        current = waypoints[i]
+        next_point = waypoints[i + 1]
+        
+        # Calculate bearing
+        bearing = calculate_bearing(current[1], current[0], next_point[1], next_point[0])
+        
+        step = {
+            "instruction": get_direction_instruction(bearing, i, len(waypoints), pattern),
+            "distance": calculate_distance_between_points(current[1], current[0], next_point[1], next_point[0]),
+            "bearing": bearing,
+            "coordinates": next_point
+        }
+        steps.append(step)
+    
+    return steps
+
+def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate bearing between two points."""
+    import math
+    dlon = math.radians(lon2 - lon1)
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    
+    y = math.sin(dlon) * math.cos(lat2_rad)
+    x = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon)
+    
+    bearing = math.atan2(y, x)
+    bearing = math.degrees(bearing)
+    bearing = (bearing + 360) % 360
+    
+    return bearing
+
+def calculate_distance_between_points(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance between two points in meters."""
+    import math
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    return 6371000 * c
+
+def get_direction_instruction(bearing: float, step_index: int, total_steps: int, pattern: str) -> str:
+    """Generate human-readable direction instruction."""
+    if step_index == 0:
+        return f"Start your {pattern.replace('_', ' ')} route"
+    
+    if step_index == total_steps - 1:
+        return "Return to starting point"
+    
+    # Convert bearing to direction
+    if bearing >= 337.5 or bearing < 22.5:
+        direction = "North"
+    elif bearing >= 22.5 and bearing < 67.5:
+        direction = "Northeast"
+    elif bearing >= 67.5 and bearing < 112.5:
+        direction = "East"
+    elif bearing >= 112.5 and bearing < 157.5:
+        direction = "Southeast"
+    elif bearing >= 157.5 and bearing < 202.5:
+        direction = "South"
+    elif bearing >= 202.5 and bearing < 247.5:
+        direction = "Southwest"
+    elif bearing >= 247.5 and bearing < 292.5:
+        direction = "West"
+    else:
+        direction = "Northwest"
+    
+    return f"Head {direction}"
 
 def generate_ai_summary(prompt: str, best_route: Dict) -> str:
     """Generate AI summary for the best route."""
@@ -357,11 +601,17 @@ async def plan_route(request: RouteRequest) -> RouteResponse:
         
         for route in routes:
             actual_distances.append(route["distance_meters"])
+            
+            # Get variations from route properties if available
+            variations = route["geojson"]["properties"].get("variations", 
+                {"aqi_modifier": 1.0, "greenery_modifier": 1.0, "safety_modifier": 1.0})
+            
             score_details = calculate_route_score(
                 route["distance_meters"],
                 target_distance,
                 aqi,
-                weights=request.weights
+                weights=request.weights,
+                variations=variations
             )
             
             scored_routes.append({
@@ -375,7 +625,10 @@ async def plan_route(request: RouteRequest) -> RouteResponse:
                     "aqi_score": score_details["aqi_score"],
                     "greenery_score": score_details["greenery_score"],
                     "safety_score": score_details["safety_score"]
-                }
+                },
+                "pattern": route.get("pattern", "unknown"),
+                "description": route["geojson"]["properties"].get("description", "Custom route"),
+                "turn_by_turn": route["geojson"]["properties"]["segments"][0].get("steps", [])
             })
         
         # Sort by score (descending)
