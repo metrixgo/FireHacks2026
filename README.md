@@ -1,258 +1,117 @@
-# 🏃 AI-Powered Exercise Route Planner
+# Nearmiss
 
-An intelligent web application that helps users find optimal running and walking routes based on air quality, safety, scenery, and distance preferences using AI-powered analysis.
+Finds rising risk patterns in aviation near-miss narratives — the free-text safety reports
+crews file after something almost went wrong — and proves the pattern was detectable before
+the incident it preceded.
 
-## ✨ Features
-
-- **AI-Powered Route Planning**: Uses Featherless AI to understand natural language requests
-- **Real-time Air Quality**: Integrates OpenAQ API for current air quality data
-- **Smart Route Scoring**: Mathematical model to rank routes based on multiple factors
-- **Interactive Maps**: Split-screen UI with React-Leaflet and OpenStreetMap
-- **Route Comparison**: View multiple candidate routes with detailed breakdowns
-- **Responsive Design**: Mobile-first approach with adaptive layout
-
-## 🏗️ Architecture
-
-### Tech Stack
-
-**Frontend:**
-- React with Vite
-- React-Leaflet for interactive maps
-- OpenStreetMap tiles
-- Axios for API calls
-- Lucide-React icons
-
-**Backend:**
-- Python FastAPI
-- Uvicorn server
-- OpenAI SDK (configured for Featherless AI)
-- Pydantic for data validation
-- Requests for HTTP calls
-
-**External APIs:**
-- Featherless AI (`Qwen/Qwen2.5-7B-Instruct`) - Intent extraction and summaries
-- OpenRouteService - Route generation
-- OpenAQ - Air quality data
-
-## 📊 Route Scoring Algorithm
-
-Each route is scored on a scale of 0-100 using:
-
-```
-Score(r) = (0.4 × S_dist) + (0.3 × S_aqi) + (0.15 × S_green) + (0.15 × S_safe)
-```
-
-**Components:**
-- **Distance Score**: Penalizes deviation from target distance
-- **Air Quality Score**: Based on AQI (0-300 scale)
-- **Greenery Score**: Route attributes and park proximity
-- **Safety Score**: Footway and pedestrian path density
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.8+
-- Node.js 16+
-- API Keys (Featherless AI, OpenRouteService)
-
-### Installation
-
-1. **Clone the repository**
-```bash
-git clone <your-repo-url>
-cd ai-exercise-route-planner
-```
-
-2. **Install dependencies**
-```bash
-npm run install:all
-```
-
-3. **Configure environment variables**
-
-Backend (`backend/.env`):
-```
-FEATHERLESS_API_KEY=your_featherless_api_key
-ORS_API_KEY=your_openrouteservice_api_key
-```
-
-Frontend (`frontend/.env`):
-```
-VITE_API_URL=http://localhost:8000
-```
-
-4. **Run development servers**
-```bash
-npm run dev
-```
-
-This starts both backend (port 8000) and frontend (port 5173) simultaneously.
-
-## 📁 Project Structure
-
-```
-ai-exercise-route-planner/
-├── backend/
-│   ├── main.py              # FastAPI application
-│   ├── requirements.txt     # Python dependencies
-│   └── .env.example         # Environment variables template
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx         # Main React component
-│   │   ├── App.css         # Component styles
-│   │   └── main.jsx        # React entry point
-│   ├── package.json         # Node dependencies
-│   └── .env.example        # Environment variables template
-├── package.json             # Root package scripts
-└── DEPLOYMENT_GUIDE.md     # Deployment instructions
-```
-
-## 🔌 API Endpoints
-
-### Backend Endpoints
-
-**Health Check**
-```
-GET /health
-```
-
-**Plan Route**
-```
-POST /api/plan-route
-Content-Type: application/json
-
-{
-  "latitude": 40.7128,
-  "longitude": -74.0060,
-  "prompt": "I want to run for 5 miles"
-}
-```
-
-**Response**
-```json
-{
-  "ai_summary": "This 5.02-mile route is perfect for your run...",
-  "target_meters": 8046.72,
-  "target_miles": 5.0,
-  "activity": "running",
-  "local_aqi": 45,
-  "candidate_routes": [...],
-  "selected_route": {...}
-}
-```
-
-## 🧪 Testing
-
-### Test Backend Health
-```bash
-curl http://localhost:8000/health
-```
-
-### Test Route Planning
-```bash
-curl -X POST http://localhost:8000/api/plan-route \
-  -H "Content-Type: application/json" \
-  -d '{
-    "latitude": 40.7128,
-    "longitude": -74.0060,
-    "prompt": "I want to run for 5 miles"
-  }'
-```
-
-## 🌐 Deployment
-
-### Deploy to Render
-
-Follow the detailed deployment guide in [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
-
-**Quick Summary:**
-1. Deploy backend as Python Web Service
-2. Deploy frontend as Static Site
-3. Configure environment variables
-4. Update frontend API URL to point to backend
-
-## 🔑 API Keys Setup
-
-### Featherless AI
-1. Sign up at [featherless.ai](https://featherless.ai/)
-2. Get API key from dashboard
-3. Add to backend environment variables
-
-### OpenRouteService
-1. Sign up at [openrouteservice.org](https://openrouteservice.org/)
-2. Get free API key (2000 requests/day)
-3. Add to backend environment variables
-
-## 📱 Usage
-
-1. **Grant Location Access**: Click "Use My Location" or enter coordinates manually
-2. **Enter Prompt**: Type natural language request (e.g., "I want to run for 5 miles")
-3. **Find Routes**: Click "Find Best Route" to generate candidate routes
-4. **View Results**: 
-   - AI summary explains the recommended route
-   - Compare candidate routes with detailed scores
-   - Click routes to view them on the map
-5. **Navigate**: Use the interactive map to explore the selected route
-
-## 🎨 UI Features
-
-### Left Panel (AI & Route Control)
-- Coordinate input with geolocation
-- Natural language prompt input
-- AI-generated route summaries
-- Candidate route list with scores
-- Detailed breakdown metrics
-
-### Right Panel (Map View)
-- Full-height interactive Leaflet map
-- OpenStreetMap tiles
-- Route polyline visualization
-- User location marker
-- Automatic recentering
-
-## 🔧 Development
-
-### Available Scripts
-
-```bash
-npm run install:frontend    # Install frontend dependencies
-npm run install:backend     # Install backend dependencies
-npm run install:all         # Install all dependencies
-npm run dev:backend         # Start backend server only
-npm run dev:frontend        # Start frontend dev server only
-npm run dev                 # Start both servers
-npm run build:frontend      # Build frontend for production
-```
-
-## 🐛 Troubleshooting
-
-### Backend Issues
-- **API Key Errors**: Verify environment variables are set correctly
-- **Dependencies**: Run `pip install -r requirements.txt` in backend directory
-- **Port Conflicts**: Ensure port 8000 is available
-
-### Frontend Issues
-- **Map Not Loading**: Check internet connection (OSM tiles require internet)
-- **API Connection**: Verify `VITE_API_URL` is set correctly
-- **Build Errors**: Clear node_modules and reinstall dependencies
-
-### API Integration Issues
-- **ORS Rate Limits**: Free tier limited to 2000 requests/day
-- **AI Timeouts**: Featherless AI may have response delays
-- **AQI Data**: Not all locations have air quality monitoring
-
-## 📄 License
-
-This project is open source and available for educational purposes.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## 📞 Support
-
-For deployment issues, refer to [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+An agent running on Featherless decides what to investigate and calls eight tools to do it.
+**Every number in the output is computed by Python from the report database. Models read
+narratives, name patterns and write prose. No model ever produces a statistic.**
 
 ---
 
-Built with ❤️ using AI-powered route planning technology
+## Run it in five minutes
+
+```bash
+pip install -r requirements.txt -r requirements-ingest.txt
+python make_seed.py                          # synthetic corpus, works offline
+python ingest.py --csv data/seed_reports.csv --clusters 14
+export FEATHERLESS_API_KEY=sk-...
+uvicorn app:app --reload
+```
+
+Open http://127.0.0.1:8000 and hit a preset. `GET /api/health` tells you whether your three
+models are actually live on Featherless and how large the catalog is.
+
+## Deploy to Render
+
+Push to GitHub, then New → Web Service → connect the repo. `render.yaml` is already here, or
+set it manually:
+
+| Field | Value |
+|---|---|
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn app:app --host 0.0.0.0 --port $PORT` |
+| Env var | `FEATHERLESS_API_KEY` |
+
+Three things that will otherwise cost you the demo:
+
+1. **Commit `data/nearmiss.db`.** Ingestion uses scikit-learn and will exhaust the free tier's
+   512 MB. Build the database on your laptop, commit it, ship it. `requirements.txt` has no
+   scikit-learn in it on purpose.
+2. **Bind `0.0.0.0` and `$PORT`** exactly as above or Render's health check fails.
+3. **Load the URL five minutes before you present.** The free tier sleeps and cold-starts in
+   about 50 seconds.
+
+## Where the models are used
+
+One Featherless key, three model families, because the roles want different things.
+
+| Role | Default | Why |
+|---|---|---|
+| `AGENT_MODEL` | `Qwen/Qwen3-32B` | Native tool calling. This is the one that must be reliable. |
+| `EXTRACT_MODEL` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Cheap, fast, called per report. |
+| `VERIFY_MODEL` | `mistralai/Mistral-Small-24B-Instruct-2501` | Different lineage from the agent, so it can actually disagree. |
+
+All three are environment variables. If `/api/health` reports one unavailable, swap the string
+— that is the entire cost of changing models here, and it is the reason this runs on Featherless
+rather than a single-vendor API.
+
+Set `FEATHERLESS_CONCURRENCY` to your plan's simultaneous-request cap minus one. `llm.py`
+holds a semaphore at that value; without it a fan-out returns a wall of 429s.
+
+## The eight tools
+
+| Tool | Provenance |
+|---|---|
+| `search_reports` | SQLite FTS5 |
+| `cluster_incidents` | SQL |
+| `compute_trend` | **Python only** — monthly counts, rate ratio, least-squares slope, exact binomial tail p-value |
+| `compare_baseline` | **Python only** — same cluster at every other field |
+| `backtest_asof` | **Python only** — recomputes a trend using data strictly before a cutoff month |
+| `get_airport_context` | SQL |
+| `extract_causal_chain` | model reads one narrative → structured JSON |
+| `verify_finding` | independent model family checks the conclusion against sources |
+
+`compute_trend` treats the recent window as a binomial draw conditional on the window total,
+so the p-value is exact and needs no scipy. Read `tools.py::_binom_tail`.
+
+## Real data
+
+The seed corpus is **synthetic** and says so. It exists so the app works before you have
+anything. Real reports come from NASA's Aviation Safety Reporting System:
+
+<https://asrs.arc.nasa.gov/search/database.html>
+
+Export CSV, then `python ingest.py --csv asrs_export.csv --asrs`. ASRS ships two header rows
+and renames columns periodically; `COLUMN_GUESSES` in `ingest.py` handles the common variants
+and prints the headers it saw if it can't find a narrative column.
+
+## What the seed data contains
+
+Two patterns are planted, and the system finds both without being told they exist:
+
+- **KSFO, parallel-approach runway confusion.** Ramps from April 2025. Measured rate ratio
+  4.4×, p = 0.00004, while peer airports sit near 1.1× — so it is local, not a national
+  reporting shift.
+- **KBOS, hot brakes on short turnarounds.** Ramps into May 2024, then drops after a fix.
+  `backtest_asof(cutoff_ym="2024-05")` uses data only through April 2024 and returns
+  ratio 4.8×, p = 0.0019, `would_have_flagged: true`.
+
+## Demo, 90 seconds
+
+1. Ask *"Is anything getting worse at SFO?"* Let the strips fill the bay — the judges watch it
+   choose what to investigate.
+2. Point at a blue strip: this arithmetic is Python, not a model.
+3. Point at `compare_baseline`: the reason it isn't fooled by a nationwide reporting change.
+4. Ask *"Was the BOS brake-temperature pattern detectable before May 2024?"* and land on
+   **would have flagged, one month early, on data that existed at the time.**
+
+## Honest limits
+
+Synthetic seed data proves the pipeline, not the science — swap in real ASRS before claiming
+a result. Clustering is TF-IDF + MiniBatchKMeans, which merges themes that share vocabulary;
+raise `--clusters` if a pattern looks diluted. A rising report count can mean rising risk or
+rising reporting, which is exactly why `compare_baseline` exists and why the agent is
+instructed to say so. This is a prototype, not an operational safety tool.
+
