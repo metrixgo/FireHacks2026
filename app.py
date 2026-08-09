@@ -28,7 +28,7 @@ ROOMS_ROOT = ROOMS_ROOT.resolve()
 ROOM_ID_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
 ROOM_ID_RE = re.compile(r"^[A-Z0-9]{6}$")
 
-FEATHERLESS_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+FEATHERLESS_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 DANGEROUS_TOKENS = [
     "sudo", "rm -rf /", "rm -rf /*", " / ", "..", "~", "curl", "wget",
